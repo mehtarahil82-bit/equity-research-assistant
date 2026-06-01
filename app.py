@@ -18,9 +18,7 @@ load_dotenv()
 API_KEY = os.getenv("OPENAI_API_KEY")
 
 if not API_KEY:
-    raise ValueError(
-        "OPENAI_API_KEY not found in .env file"
-    )
+    raise ValueError("OPENAI_API_KEY not found in .env file")
 
 client = OpenAI(api_key=API_KEY)
 
@@ -29,6 +27,7 @@ client = OpenAI(api_key=API_KEY)
 # =========================================================
 
 PDF_PATH = r"/Users/rahilmehta/Desktop/untitled folder/data.pdf/data.pdf"
+
 # =========================================================
 # EXTRACT TEXT FROM PDF
 # =========================================================
@@ -38,40 +37,22 @@ print("\nOpening PDF...\n")
 full_text = ""
 
 with pdfplumber.open(PDF_PATH) as pdf:
-
     for page_num, page in enumerate(pdf.pages):
-
         print(f"Processing Page {page_num + 1}")
-
         text = page.extract_text()
-
         if text:
-
             full_text += text + "\n"
 
 print("\nTEXT EXTRACTION COMPLETED\n")
+print(f"TOTAL EXTRACTED TEXT LENGTH: {len(full_text)}")
 
 # =========================================================
-# DEBUGGING
-# =========================================================
-
-print(
-    f"TOTAL EXTRACTED TEXT LENGTH: "
-    f"{len(full_text)}"
-)
-
-# =========================================================
-# SAVE EXTRACTED TEXT
+# SAVE TEXT
 # =========================================================
 
 os.makedirs("data", exist_ok=True)
 
-with open(
-    "data/extracted_text.txt",
-    "w",
-    encoding="utf-8"
-) as f:
-
+with open("data/extracted_text.txt", "w", encoding="utf-8") as f:
     f.write(full_text)
 
 print("Extracted text saved")
@@ -80,8 +61,6 @@ print("Extracted text saved")
 # CREATE CHUNKS
 # =========================================================
 
-print("\nCreating chunks...\n")
-
 splitter = RecursiveCharacterTextSplitter(
     chunk_size=1000,
     chunk_overlap=200
@@ -89,11 +68,7 @@ splitter = RecursiveCharacterTextSplitter(
 
 chunks = splitter.split_text(full_text)
 
-# REMOVE USELESS SMALL CHUNKS
-chunks = [
-    chunk for chunk in chunks
-    if len(chunk.strip()) > 100
-]
+chunks = [c for c in chunks if len(c.strip()) > 100]
 
 print(f"Total chunks created: {len(chunks)}")
 
@@ -103,24 +78,21 @@ print(f"Total chunks created: {len(chunks)}")
 
 print("\nLoading embedding model...\n")
 
-model = SentenceTransformer(
-    "BAAI/bge-small-en"
-)
+model = SentenceTransformer("BAAI/bge-small-en")
 
 # =========================================================
-# CREATE EMBEDDINGS
+# CREATE EMBEDDINGS (FIXED)
 # =========================================================
 
 print("\nGenerating embeddings...\n")
 
 embeddings = model.encode(
     chunks,
-    show_progress_bar=True
+    show_progress_bar=True,
+    normalize_embeddings=True
 )
 
-embeddings = np.array(
-    embeddings
-).astype("float32")
+embeddings = np.array(embeddings).astype("float32")
 
 print("Embeddings created successfully")
 
@@ -128,31 +100,15 @@ print("Embeddings created successfully")
 # CREATE FAISS INDEX
 # =========================================================
 
-print("\nCreating FAISS vector database...\n")
-
 dimension = embeddings.shape[1]
-
-index = faiss.IndexFlatL2(dimension)
+index = faiss.IndexFlatIP(dimension)  # cosine-like search
 
 index.add(embeddings)
 
 print("FAISS database ready")
 
 # =========================================================
-# SAVE FAISS INDEX
-# =========================================================
-
-os.makedirs("vector_store", exist_ok=True)
-
-faiss.write_index(
-    index,
-    "vector_store/financial_index.faiss"
-)
-
-print("FAISS index saved")
-
-# =========================================================
-# AI QUESTION LOOP
+# CHAT LOOP
 # =========================================================
 
 print("\n===================================")
@@ -166,147 +122,94 @@ while True:
 
     query = input("Question: ")
 
-    # EXIT CONDITION
     if query.lower() == "exit":
-
-        print("\nExiting assistant...\n")
-
+        print("Exiting...")
         break
 
     # =====================================================
-    # CREATE QUERY EMBEDDING
+    # QUERY EMBEDDING (FIXED)
     # =====================================================
 
-    query_embedding = model.encode([query])
-
-    query_embedding = np.array(
-        query_embedding
-    ).astype("float32")
-
-    # =====================================================
-    # SEARCH VECTOR DATABASE
-    # =====================================================
-
-    D, I = index.search(
-        query_embedding,
-        k=12
+    query_embedding = model.encode(
+        [query],
+        normalize_embeddings=True
     )
 
+    query_embedding = np.array(query_embedding).astype("float32")
+
     # =====================================================
-    # BUILD CONTEXT
+    # SEARCH FAISS
     # =====================================================
+
+    D, I = index.search(query_embedding, k=12)
 
     retrieved_chunks = []
 
     for idx in I[0]:
-
-        chunk = chunks[idx]
-
-        if len(chunk.strip()) > 100:
-
-            retrieved_chunks.append(chunk)
+        if idx == -1:
+            continue
+        if idx < len(chunks):
+            retrieved_chunks.append(chunks[idx])
 
     context = "\n\n".join(retrieved_chunks)
 
     # =====================================================
-    # SAFETY CHECK
+    # SAFETY CHECK (FIXED THRESHOLD)
     # =====================================================
 
-    if len(context.strip()) < 200:
-
-        print(
-            "\nThe document does not contain enough information.\n"
-        )
-
+    if len(context.strip()) < 50:
+        print("\nNo relevant information found in document.\n")
         continue
 
     # =====================================================
-    # CREATE PROMPT
+    # PROMPT
     # =====================================================
 
     prompt = f"""
 You are a professional equity research analyst.
 
-Use ONLY the information provided in the context.
+Use ONLY the context below.
 
-If the answer cannot be found in the context,
-reply exactly with:
-
+If answer is not found, say:
 The document does not contain enough information.
 
-Be concise, accurate, and professional.
-
-========================
-CONTEXT
-========================
-
+CONTEXT:
 {context}
 
-========================
-QUESTION
-========================
-
+QUESTION:
 {query}
 """
 
     # =====================================================
-# GENERATE AI RESPONSE
-# =====================================================
+    # AI RESPONSE (FIXED INSIDE LOOP)
+    # =====================================================
 
-try:
+    try:
 
-    messages = [
-        {
-            "role": "system",
-            "content": "You are a professional equity research analyst."
-        }
-    ]
+        messages = [
+            {"role": "system", "content": "You are a professional equity research analyst."}
+        ]
 
-    messages.extend(chat_history)
+        messages.extend(chat_history)
 
-    messages.append(
-        {
-            "role": "user",
-            "content": prompt
-        }
-    )
+        messages.append({"role": "user", "content": prompt})
 
-    response = client.chat.completions.create(
+        response = client.chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=messages,
+            temperature=0
+        )
 
-        model="gpt-4.1-mini",
+        answer = response.choices[0].message.content
 
-        messages=messages,
+        chat_history.append({"role": "user", "content": query})
+        chat_history.append({"role": "assistant", "content": answer})
 
-        temperature=0
-    )
+        chat_history = chat_history[-20:]
 
-    answer = response.choices[0].message.content
+        print("\nANSWER:\n")
+        print(answer)
+        print("\n" + "=" * 60 + "\n")
 
-    chat_history.append(
-        {
-            "role": "user",
-            "content": query
-        }
-    )
-
-    chat_history.append(
-        {
-            "role": "assistant",
-            "content": answer
-        }
-    )
-
-    # Keep only last 10 question-answer pairs
-    chat_history = chat_history[-20:]
-
-    print("\nANSWER:\n")
-
-    print(answer)
-
-    print("\n" + "=" * 60 + "\n")
-
-except Exception as e:
-
-    print("\nERROR GENERATING RESPONSE:\n")
-
-    print(e)
+    except Exception as e:
+        print("\nERROR:\n", e)
