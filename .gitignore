@@ -1,0 +1,10 @@
+env
+.env
+__pycache__/
+vector_store/
+data/data.pdf/
+vector_store/
+data/
+data.pdf/
+.DS_Store
+env
